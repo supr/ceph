@@ -3704,7 +3704,25 @@ bool OSDMonitor::prepare_command(MMonCommand *m)
     cmd_getval(g_ceph_context, cmdmap, "weight", w);
     long ww = (int)((double)CEPH_OSD_IN*w);
     if (ww < 0L) {
-      ss << "weight must be > 0";
+      ss << "weight must be >= 0";
+      err = -EINVAL;
+      goto reply;
+    }
+    if (osdmap.exists(id)) {
+      pending_inc.new_primary_affinity[id] = ww;
+      ss << "set osd." << id << " primary-affinity to " << w << " (" << ios::hex << ww << ios::dec << ")";
+      getline(ss, rs);
+      wait_for_finished_proposal(new Monitor::C_Command(mon, m, 0, rs, get_last_committed()));
+      return true;
+    }
+  } else if (prefix == "osd primary-affinity") {
+    int64_t id;
+    cmd_getval(g_ceph_context, cmdmap, "id", id);
+    double w;
+    cmd_getval(g_ceph_context, cmdmap, "weight", w);
+    long ww = (int)((double)CEPH_OSD_IN*w);
+    if (ww < 0L) {
+      ss << "weight must be >= 0";
       err = -EINVAL;
       goto reply;
     }
