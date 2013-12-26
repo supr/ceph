@@ -67,6 +67,7 @@ extern CompatSet get_mdsmap_compat_set_base(); // pre v0.20
 #define MDS_FEATURE_INCOMPAT_DIRINODE CompatSet::Feature(4, "dir inode in separate object")
 #define MDS_FEATURE_INCOMPAT_ENCODING CompatSet::Feature(5, "mds uses versioned encoding")
 #define MDS_FEATURE_INCOMPAT_OMAPDIRFRAG CompatSet::Feature(6, "dirfrag is stored in omap")
+#define MDS_FEATURE_INCOMPAT_NOANCHOR CompatSet::Feature(7, "no anchor table")
 
 class MDSMap {
 public:
@@ -147,7 +148,7 @@ protected:
                                   // at least this osdmap to ensure the blacklist propagates.
   utime_t created, modified;
 
-  int32_t tableserver;   // which MDS has anchortable, snaptable
+  int32_t tableserver;   // which MDS has snaptable
   int32_t root;          // which MDS has root directory
 
   __u32 session_timeout;
