@@ -1066,21 +1066,15 @@ void MDCache::get_force_dirfrag_bound_set(vector<dirfrag_t>& dfs, set<CDir*>& bo
     dout(10) << " checking fragset " << p->second.get() << " on " << *diri << dendl;
     for (set<frag_t>::iterator q = p->second.begin(); q != p->second.end(); ++q) {
       frag_t fg = *q;
-      list<CDir*> u;
-      diri->get_dirfrags_under(fg, u);
-      dout(10) << "  frag " << fg << " contains " << u << dendl;
-      if (!u.empty())
-	bounds.insert(u.begin(), u.end());
-      frag_t t = fg;
-      while (t != frag_t()) {
-	t = t.parent();
-	CDir *dir = diri->get_dirfrag(t);
-	if (dir) {
-	  // ugh, we found a containing parent
-	  dout(10) << "  ugh, splitting parent frag " << t << " " << *dir << dendl;
-	  force_dir_fragment(diri, fg);
-	  break;
-	}
+      list<frag_t> fgls;
+      diri->dirfragtree.get_leaves_under(fg, fgls);
+      if (fgls.empty())
+	fgls.push_back(diri->dirfragtree[fg.value()]);
+      dout(10) << "  frag " << fg << " contains " << fgls << dendl;
+      for (list<frag_t>::iterator r = fgls.begin(); r != fgls.end(); ++r) {
+	CDir *dir = diri->get_dirfrag(*r);
+	if (dir)
+	  bounds.insert(dir);
       }
     }
   }
