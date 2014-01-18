@@ -1346,26 +1346,30 @@ void OSDMap::_remove_nonexistent_osds(const pg_pool_t& pool,
   }
 }
 
-void OSDMap::_apply_primary_affinity(ps_t seed, const pg_pool_t& pool,
+bool OSDMap::_is_primary_affinity(const vector<int>& osds) const
+{
+  for (vector<int>::const_iterator p = osds.begin(); p != osds.end(); ++p) {
+    if (osd_primary_affinity[*p] != 0x10000) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void OSDMap::_apply_primary_affinity(ps_t seed,
+				     const pg_pool_t& pool,
+				     bool first,
 				     vector<int> *osds,
 				     int *primary) const
 {
-  bool any = false;
-  for (vector<int>::iterator p = osds->begin(); p != osds->end(); ++p) {
-    if (osd_primary_affinity[*p] != 0x10000) {
-      any = true;
-      break;
-    }
-  }
-  if (!any)
-    return;  // nobody has a non-default affinity
-
   if (pool.can_shift_osds()) {
     // move anyone with a low primary affinity to the "back of the
     // line" with probability inversely proportional to their
     // affinity.  feed both the seed (for the pg) and the osd into
     // the hash/rng so that a proportional fraction of an osd's pgs
     // get moved to the back of the line.
+    if (!first)
+      return;
     vector<int> pre, post;
     for (vector<int>::iterator p = osds->begin(); p != osds->end(); ++p) {
       unsigned a = osd_primary_affinity[*p];
@@ -1381,12 +1385,31 @@ void OSDMap::_apply_primary_affinity(ps_t seed, const pg_pool_t& pool,
     osds->swap(pre);
     *primary = (*osds)[0];
   } else {
-    // FIXME: do something different when we add the EC primary stuff in.
+    // same basic strategy as above, but since we don't need to
+    // reorder the results, we can stop as soon as we find a suitable
+    // primary that is not excluded.  if we *do* exclude it for some
+    // reason, fall back to the last item we skipped.
+    int fallback = -1;
+    for (unsigned i = 0; i < osds->size(); ++i) {
+      int o = (*osds)[i];
+      if (o == CRUSH_ITEM_NONE)
+	continue;
+      unsigned a = osd_primary_affinity[o];
+      if (a < 0x10000 && (crush_hash32_2(CRUSH_HASH_RJENKINS1,
+					 seed, o) >> 16) >= a) {
+	fallback = o;
+      } else {
+	*primary = i;
+	return;
+      }
+    }
+    *primary = fallback;
   }
 }
 
 int OSDMap::_pg_to_osds(const pg_pool_t& pool, pg_t pg,
-                        vector<int> *osds, int *primary) const
+                        vector<int> *osds, int *primary,
+			ps_t *ppps) const
 {
   // map to osds[]
   ps_t pps = pool.raw_pg_to_pps(pg);  // placement ps
@@ -1400,23 +1423,37 @@ int OSDMap::_pg_to_osds(const pg_pool_t& pool, pg_t pg,
   _remove_nonexistent_osds(pool, *osds);
 
   *primary = (osds->empty() ? -1 : osds->front());
-
-  _apply_primary_affinity(pps, pool, osds, primary);
+  if (ppps)
+    *ppps = pps;
 
   return osds->size();
 }
 
 // pg -> (up osd list)
-void OSDMap::_raw_to_up_osds(pg_t pg, const vector<int>& raw,
+void OSDMap::_raw_to_up_osds(const pg_pool_t& pool, const vector<int>& raw,
                              vector<int> *up, int *primary) const
 {
-  up->clear();
-  for (unsigned i=0; i<raw.size(); i++) {
-    if (!exists(raw[i]) || is_down(raw[i]))
-      continue;
-    up->push_back(raw[i]);
+  if (pool.can_shift_osds()) {
+    // shift left
+    up->clear();
+    for (unsigned i=0; i<raw.size(); i++) {
+      if (!exists(raw[i]) || is_down(raw[i]))
+	continue;
+      up->push_back(raw[i]);
+    }
+    *primary = (up->empty() ? -1 : up->front());
+  } else {
+    // set down/dne devices to NONE
+    *primary = -1;
+    up->resize(raw.size());
+    for (int i = raw.size() - 1; i >= 0; --i) {
+      if (!exists(raw[i]) || is_down(raw[i])) {
+	(*up)[i] = CRUSH_ITEM_NONE;
+      } else {
+	*primary = (*up)[i] = raw[i];
+      }
+    }
   }
-  *primary = (up->empty() ? -1 : up->front());
 }
   
 void OSDMap::_get_temp_osds(const pg_pool_t& pool, pg_t pg,
@@ -1446,7 +1483,7 @@ int OSDMap::pg_to_osds(pg_t pg, vector<int> *raw, int *primary) const
   const pg_pool_t *pool = get_pg_pool(pg.pool());
   if (!pool)
     return 0;
-  int r = _pg_to_osds(*pool, pg, raw, primary);
+  int r = _pg_to_osds(*pool, pg, raw, primary, NULL);
   return r;
 }
 
@@ -1456,8 +1493,11 @@ void OSDMap::pg_to_raw_up(pg_t pg, vector<int> *up, int *primary) const
   if (!pool)
     return;
   vector<int> raw;
-  _pg_to_osds(*pool, pg, &raw, primary);
-  _raw_to_up_osds(pg, raw, up, primary);
+  ps_t pps;
+  _pg_to_osds(*pool, pg, &raw, primary, &pps);
+  _raw_to_up_osds(*pool, raw, up, primary);
+  if (_is_primary_affinity(*up))
+    _apply_primary_affinity(pps, *pool, true, up, primary);
 }
   
 void OSDMap::_pg_to_up_acting_osds(pg_t pg, vector<int> *up, int *up_primary,
@@ -1471,13 +1511,19 @@ void OSDMap::_pg_to_up_acting_osds(pg_t pg, vector<int> *up, int *up_primary,
   vector<int> _acting;
   int _up_primary;
   int _acting_primary;
-  _pg_to_osds(*pool, pg, &raw, &_up_primary);
-  _raw_to_up_osds(pg, raw, &_up, &_up_primary);
+  ps_t pps;
+  _pg_to_osds(*pool, pg, &raw, &_up_primary, &pps);
+  _raw_to_up_osds(*pool, raw, &_up, &_up_primary);
+  bool affinity = _is_primary_affinity(_up);
+  if (affinity)
+    _apply_primary_affinity(pps, *pool, true, &_up, &_up_primary);
   _get_temp_osds(*pool, pg, &_acting, &_acting_primary);
   if (_acting.empty())
     _acting = _up;
   if (_acting_primary == -1)
     _acting_primary = _up_primary;
+  if (affinity)
+    _apply_primary_affinity(pps, *pool, false, &_acting, &_acting_primary);
   if (up)
     up->swap(_up);
   if (up_primary)
