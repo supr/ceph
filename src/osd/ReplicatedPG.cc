@@ -5517,6 +5517,21 @@ int ReplicatedPG::try_flush_mark_clean(FlushOpRef fop)
     return -EBUSY;
   }
 
+  // scrubbing?
+  if (scrubber.write_blocked_by_scrub(obc->obs.oi.soid)) {
+    dout(10) << __func__ << " scrubbing" << dendl;
+    if (!fop->blocking) {
+      if (!fop->dup_ops.empty()) {
+	dout(20) << __func__ << " requeueing dups" << dendl;
+	requeue_ops(fop->dup_ops);
+      }
+      flush_ops.erase(oid);
+      return -EBUSY;
+    } else {
+      assert(0 == "no blocking flush vs scrub handling");
+    }
+  }
+
   // successfully flushed; can we clear the dirty bit?
   if (!fop->blocking) {
     // non-blocking: try to take the lock manually, since we don't
