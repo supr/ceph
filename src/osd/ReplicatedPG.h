@@ -1170,6 +1170,8 @@ public:
   void on_flushed();
   void on_removal(ObjectStore::Transaction *t);
   void on_shutdown();
+
+  void agent_work() { /* placeholder */ }
 };
 
 inline ostream& operator<<(ostream& out, ReplicatedPG::RepGather& repop)
