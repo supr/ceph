@@ -475,8 +475,9 @@ void OSDService::agent_entry()
     if (agent_queue_pos == agent_queue.end())
       agent_queue_pos = agent_queue.begin();
     PGRef pg = *agent_queue_pos;
+    int max = g_conf->osd_max_agent_ops - agent_ops;
     agent_lock.Unlock();
-    pg->agent_work();
+    pg->agent_work(max);
     agent_lock.Lock();
   }
   agent_lock.Unlock();

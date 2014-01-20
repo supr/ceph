@@ -1859,7 +1859,7 @@ public:
   virtual void check_blacklisted_watchers() = 0;
   virtual void get_watchers(std::list<obj_watch_item_t>&) = 0;
 
-  virtual void agent_work() = 0;
+  virtual void agent_work(int max) = 0;
 };
 
 ostream& operator<<(ostream& out, const PG& pg);

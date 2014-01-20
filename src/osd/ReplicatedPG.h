@@ -28,6 +28,7 @@
 #include "PG.h"
 #include "Watch.h"
 #include "OpRequest.h"
+#include "TierAgentState.h"
 
 #include "messages/MOSDOp.h"
 #include "messages/MOSDOpReply.h"
@@ -602,6 +603,26 @@ protected:
   hobject_t get_hit_set_current_object(utime_t stamp);
   hobject_t get_hit_set_archive_object(utime_t start, utime_t end);
 
+  // agent
+  boost::scoped_ptr<TierAgentState> agent_state;
+
+  void agent_setup();       ///< initialize agent state
+  void agent_work(int max); ///< entry point to do some agent work
+  bool agent_maybe_flush(ObjectContextRef& obc);  ///< maybe flush
+  bool agent_maybe_evict(ObjectContextRef& obc);  ///< maybe evict
+  friend class GC_Agent;
+  friend class C_AgentFlushStartStop;
+
+  /// (possibly) wake up the agent
+  void agent_poke();
+
+  /// clear agent state
+  void agent_clear() {
+    agent_state.reset(NULL);
+  }
+
+  bool agent_choose_mode();  ///< choose (new) agent mode(s)
+
   /// true if we can send an ondisk/commit for v
   bool already_complete(eversion_t v) {
     for (xlist<RepGather*>::iterator i = repop_queue.begin();
@@ -1170,8 +1191,6 @@ public:
   void on_flushed();
   void on_removal(ObjectStore::Transaction *t);
   void on_shutdown();
-
-  void agent_work() { /* placeholder */ }
 };
 
 inline ostream& operator<<(ostream& out, ReplicatedPG::RepGather& repop)

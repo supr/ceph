@@ -2399,7 +2399,8 @@ public:
       if (get_write_lock()) {
 	return true;
       } // else
-      waiters.push_back(op);
+      if (op)
+	waiters.push_back(op);
       return false;
     }
     bool get_write_lock() {
