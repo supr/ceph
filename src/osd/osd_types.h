@@ -849,7 +849,7 @@ public:
       tier_of(-1), read_tier(-1), write_tier(-1),
       cache_mode(CACHEMODE_NONE),
       target_max_bytes(0), target_max_objects(0),
-      cache_target_dirty_ratio_micro(200000),
+      cache_target_dirty_ratio_micro(400000),
       cache_target_full_ratio_micro(800000),
       cache_min_flush_age(0),
       cache_min_evict_age(0),
