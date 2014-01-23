@@ -464,10 +464,10 @@ void OSDService::agent_entry()
     dout(10) << __func__
 	     << " pgs " << agent_queue.size()
 	     << " ops " << agent_ops << "/"
-	     << g_conf->osd_max_agent_ops
+	     << g_conf->osd_agent_max_ops
 	     << dendl;
     dout(20) << __func__ << " oids " << agent_oids << dendl;
-    if (agent_ops >= g_conf->osd_max_agent_ops || agent_queue.empty()) {
+    if (agent_ops >= g_conf->osd_agent_max_ops || agent_queue.empty()) {
       agent_cond.Wait(agent_lock);
       continue;
     }
@@ -475,7 +475,7 @@ void OSDService::agent_entry()
     if (agent_queue_pos == agent_queue.end())
       agent_queue_pos = agent_queue.begin();
     PGRef pg = *agent_queue_pos;
-    int max = g_conf->osd_max_agent_ops - agent_ops;
+    int max = g_conf->osd_agent_max_ops - agent_ops;
     agent_lock.Unlock();
     pg->agent_work(max);
     agent_lock.Lock();

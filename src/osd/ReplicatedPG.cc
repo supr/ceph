@@ -9656,7 +9656,7 @@ hobject_t ReplicatedPG::get_hit_set_archive_object(utime_t start, utime_t end)
 void ReplicatedPG::hit_set_clear()
 {
   dout(20) << __func__ << dendl;
-  hit_set.reset(NULL);
+  hit_set.reset();
   hit_set_start_stamp = utime_t();
 }
 
@@ -9769,6 +9769,10 @@ void ReplicatedPG::hit_set_persist()
 				     info.hit_set.current_info.end);
     dout(20) << __func__ << " archive " << oid << dendl;
     reset = true;
+
+    if (agent_state)
+      agent_state->add_hit_set(info.hit_set.current_info.begin, hit_set);
+
   } else {
     // persist snapshot of current hitset
     ::encode(*hit_set, bl);
@@ -9871,6 +9875,8 @@ void ReplicatedPG::hit_set_trim(RepGather *repop, unsigned max)
 		       0,
 		       osd_reqid_t(),
 		       repop->ctx->mtime));
+    if (agent_state)
+      agent_state->remove_oldest_hit_set();
     info.hit_set.history.pop_front();
 
     struct stat st;
@@ -10047,9 +10053,46 @@ bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc)
   }
 
   if (agent_state->evict_mode != TierAgentState::EVICT_MODE_FULL) {
-    // is this object old enough?
+    // is this object old and/or cold enough?
+    int age = -1, temp = 0;
+    agent_estimate_age_temp(soid, &age, &temp);
+    if (age < 0 && obc->obs.oi.mtime != utime_t())
+      age = ceph_clock_now(NULL).sec() - obc->obs.oi.mtime;
+    if (age < 0)
+      age = pool.info.hit_set_period * pool.info.hit_set_count; // "infinite"
 
-    // FIXME: don't worry about that yet.
+    agent_state->temp_hist.add(age);
+    unsigned temp_upper = 0, temp_lower = 0;
+    unsigned age_upper = 0, age_lower = 0;
+    agent_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
+    if (age >= 0) {
+      agent_state->age_hist.add(age);
+      agent_state->temp_hist.get_position_micro(age, &age_lower, &age_upper);
+    }
+    dout(20) << __func__
+	     << " age " << age << " pos " << age_lower << "-" << age_upper
+	     << ", temp " << temp << " pos " << temp_lower << "-"
+	     << temp_upper
+	     << ", evict_effort " << agent_state->evict_effort
+	     << dendl;
+    dout(20) << "temp_hist:\n";
+    Formatter *f = new_formatter("");
+    f->open_object_section("temp");
+    agent_state->temp_hist.dump(f);
+    f->close_section();
+    f->flush(*_dout);
+    *_dout << "\nage_dist:\n";
+    f->open_object_section("age");
+    agent_state->age_hist.dump(f);
+    f->close_section();
+    f->flush(*_dout);
+    delete f;
+    *_dout << dendl;
+
+#warning ignore temp until we have creation_time
+
+    if (age_lower >= agent_state->evict_effort)
+      return false;
   }
 
   dout(10) << __func__ << " evicting " << obc->obs.oi << dendl;
@@ -10060,7 +10103,7 @@ bool ReplicatedPG::agent_maybe_evict(ObjectContextRef& obc)
   assert(r == 0);
   finish_ctx(ctx, pg_log_entry_t::DELETE);
   simple_repop_submit(repop);
-  return false;
+  return true;
 }
 
 void ReplicatedPG::agent_poke()
@@ -10076,46 +10119,60 @@ void ReplicatedPG::agent_poke()
 
 bool ReplicatedPG::agent_choose_mode()
 {
-  dout(20) << __func__ << dendl;
-  TierAgentState::flush_mode_t flush_mode = TierAgentState::FLUSH_MODE_IDLE;
-  TierAgentState::evict_mode_t evict_mode = TierAgentState::EVICT_MODE_IDLE;
+  // get dirty, full ratios
+  uint64_t dirty_micro = 0;
+  uint64_t full_micro = 0;
   if (pool.info.target_max_bytes) {
     uint64_t avg_size = info.stats.stats.sum.num_bytes /
       info.stats.stats.sum.num_objects;
-
-    // flush mode
-    uint64_t dirty_bytes_micro =
+    dirty_micro =
       info.stats.stats.sum.num_objects_dirty * avg_size * 1000000 /
       (pool.info.target_max_bytes / pool.info.get_pg_num_divisor(info.pgid));
-    if (dirty_bytes_micro > pool.info.cache_target_dirty_ratio_micro)
-      flush_mode = TierAgentState::FLUSH_MODE_ACTIVE;
-
-    // evict mode
-    uint64_t full_micro =
+    full_micro =
       info.stats.stats.sum.num_bytes * 1000000 /
       (pool.info.target_max_bytes / pool.info.get_pg_num_divisor(info.pgid));
-    if (full_micro > 1000000)
-      evict_mode = TierAgentState::EVICT_MODE_FULL;
-    else if (full_micro > pool.info.cache_target_full_ratio_micro)
-      evict_mode = TierAgentState::EVICT_MODE_SOME;
   }
   if (pool.info.target_max_objects) {
-    // flush mode
     uint64_t dirty_objects_micro =
       info.stats.stats.sum.num_objects_dirty * 1000000 /
       (pool.info.target_max_objects / pool.info.get_pg_num_divisor(info.pgid));
-    if (dirty_objects_micro > pool.info.cache_target_dirty_ratio_micro)
-      flush_mode = TierAgentState::FLUSH_MODE_ACTIVE;
-
-    // evict mode
-    uint64_t full_micro =
+    if (dirty_objects_micro > dirty_micro)
+      dirty_micro = dirty_objects_micro;
+    uint64_t full_objects_micro =
       info.stats.stats.sum.num_objects * 1000000 /
       (pool.info.target_max_objects / pool.info.get_pg_num_divisor(info.pgid));
-    if (full_micro > 1000000)
-      evict_mode = TierAgentState::EVICT_MODE_FULL;
-    else if (full_micro > pool.info.cache_target_full_ratio_micro &&
-	     evict_mode != TierAgentState::EVICT_MODE_FULL)
-      evict_mode = TierAgentState::EVICT_MODE_SOME;
+    if (full_objects_micro > full_micro)
+      full_micro = full_objects_micro;
+  }
+  dout(20) << __func__ << " dirty " << ((float)dirty_micro / 1000000.0)
+	   << " full " << ((float)full_micro / 1000000.0)
+	   << dendl;
+
+  // flush mode
+  TierAgentState::flush_mode_t flush_mode = TierAgentState::FLUSH_MODE_IDLE;
+  if (dirty_micro > pool.info.cache_target_dirty_ratio_micro)
+    flush_mode = TierAgentState::FLUSH_MODE_ACTIVE;
+
+  // evict mode
+  TierAgentState::evict_mode_t evict_mode = TierAgentState::EVICT_MODE_IDLE;
+  unsigned evict_effort = 0;
+
+#warning hack force to 90% full
+  if (full_micro > 900000)
+    full_micro = 900000;
+
+  if (full_micro > 1000000 ||
+      pool.info.cache_target_full_ratio_micro >= 1000000) {
+    // evict anything clean
+    evict_mode = TierAgentState::EVICT_MODE_FULL;
+    evict_effort = 1000000;
+  } else if (full_micro > pool.info.cache_target_full_ratio_micro) {
+    // set effort in [0..1] range based on where we are between 
+    evict_mode = TierAgentState::EVICT_MODE_SOME;
+    uint64_t over = full_micro - pool.info.cache_target_full_ratio_micro;
+    uint64_t span = 1000000 - pool.info.cache_target_full_ratio_micro;
+    evict_effort = MIN(over * 1000000 / span,
+		       (unsigned)(1000000.0 * g_conf->osd_agent_min_evict_effort));
   }
 
   bool changed = false;
@@ -10137,6 +10194,14 @@ bool ReplicatedPG::agent_choose_mode()
     agent_state->evict_mode = evict_mode;
     changed = true;
   }
+  if (evict_effort != agent_state->evict_effort) {
+    dout(5) << __func__ << " evict_effort "
+	    << ((float)agent_state->evict_effort / 1000000.0)
+	    << " -> "
+	    << ((float)evict_effort / 1000000.0)
+	    << dendl;
+    agent_state->evict_effort = evict_effort;
+  }
   if (changed) {
     if (agent_state->is_idle())
       osd->agent_disable_pg(this);
@@ -10146,6 +10211,26 @@ bool ReplicatedPG::agent_choose_mode()
   return changed;
 }
 
+void ReplicatedPG::agent_estimate_age_temp(const hobject_t& oid,
+					   int *age, int *temp)
+{
+  assert(hit_set);
+  if (hit_set->contains(oid)) {
+    *age = 0;
+    ++(*temp);
+  }
+  time_t now = ceph_clock_now(NULL).sec();
+  for (map<time_t,HitSetRef>::iterator p = agent_state->hit_set_map.begin();
+       p != agent_state->hit_set_map.end();
+       ++p) {
+    if (p->second->contains(oid)) {
+      if (*age < 0) {
+	*age = now - p->first;
+      }
+      ++(*temp);
+    }
+  }
+}
 
 
 // ==========================================================================================

@@ -590,7 +590,7 @@ protected:
   void simple_repop_submit(RepGather *repop);
 
   // hot/cold tracking
-  boost::scoped_ptr<HitSet> hit_set;  ///< currently accumulating HitSet
+  HitSetRef hit_set;        ///< currently accumulating HitSet
   utime_t hit_set_start_stamp;    ///< time the current HitSet started recording
 
   void hit_set_clear();     ///< discard any HitSet state
@@ -606,12 +606,22 @@ protected:
   // agent
   boost::scoped_ptr<TierAgentState> agent_state;
 
+  friend class GC_Agent;
+  friend class C_AgentFlushStartStop;
+
   void agent_setup();       ///< initialize agent state
   void agent_work(int max); ///< entry point to do some agent work
   bool agent_maybe_flush(ObjectContextRef& obc);  ///< maybe flush
   bool agent_maybe_evict(ObjectContextRef& obc);  ///< maybe evict
-  friend class GC_Agent;
-  friend class C_AgentFlushStartStop;
+
+  /// estimate object age
+  ///
+  /// @param cur_hit_set currently accumulating hit_set
+  /// @param obc the object
+  /// @param access_age seconds since last access (lower bound)
+  /// @param temperature relative temperature (# hitset bins we appear in)
+  void agent_estimate_age_temp(const hobject_t& oid,
+			       int *access_age, int *temperature);
 
   /// (possibly) wake up the agent
   void agent_poke();

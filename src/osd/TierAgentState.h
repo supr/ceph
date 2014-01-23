@@ -19,10 +19,11 @@ struct TierAgentState {
   hobject_t position;
 
   /// histogram of ages we've encountered
-  pow2_hist_t age_histogram;
+  pow2_hist_t age_hist;
+  pow2_hist_t temp_hist;
 
   /// past HitSet(s) (not current)
-  list<HitSet*> hit_set_map;
+  map<time_t,HitSetRef> hit_set_map;
 
   /// a few recent things we've seen that are clean
   list<hobject_t> recent_clean;
@@ -59,9 +60,14 @@ struct TierAgentState {
     return get_evict_mode_name(evict_mode);
   }
 
+  /// approximate ratio of objects (assuming they are uniformly
+  /// distributed) that i should aim to evict.
+  unsigned evict_effort;
+
   TierAgentState()
     : flush_mode(FLUSH_MODE_IDLE),
-      evict_mode(EVICT_MODE_IDLE)
+      evict_mode(EVICT_MODE_IDLE),
+      evict_effort(0)
   {}
 
   /// false if we have any work to do
@@ -71,14 +77,16 @@ struct TierAgentState {
       evict_mode == EVICT_MODE_IDLE;
   }
 
-  /// estimate object age
-  ///
-  /// @param obc the object
-  /// @param access_age seconds since last access (lower bound)
-  /// @param temperature relative temperature (# hitset bins we appear in)
-  void agent_estimate_age(ObjectContextRef& obc,
-			  int *access_age,
-			  int *temperature);
+  /// add archived HitSet
+  void add_hit_set(time_t start, HitSetRef hs) {
+    hit_set_map.insert(make_pair(start, hs));
+  }
+
+  /// remove old/trimmed HitSet
+  void remove_oldest_hit_set() {
+    if (!hit_set_map.empty())
+      hit_set_map.erase(hit_set_map.begin());
+  }
 };
 
 #endif
